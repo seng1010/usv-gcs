@@ -1,0 +1,21 @@
+[Unit]
+Description=USV B2 board (thruster + pump/LED) ROS 2 stack
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=@RUN_USER@
+Group=@RUN_GROUP@
+SupplementaryGroups=docker
+Environment=HOME=@HOME_DIR@
+Environment=USV_ACTUATORS_PROJECT_DIR=@PROJECT_DIR@
+ExecStart=@PROJECT_DIR@/start_actuators.sh
+ExecStop=-/usr/bin/docker stop usv_actuators_container
+TimeoutStartSec=180
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

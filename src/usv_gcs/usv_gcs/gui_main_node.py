@@ -1,0 +1,171 @@
+"""gui_main_node — usv_gcs 패키지 (Raspberry Pi).
+
+구독:
+  /water_quality/data [std_msgs/msg/String]         JSON 파싱해서 표시
+  /gps/fix             [sensor_msgs/msg/NavSatFix]
+  /gps/has_fix         [std_msgs/msg/Bool]           false면 '⚠ GPS 신호 없음' 배너
+  /battery/thruster    [std_msgs/msg/Int32MultiArray]
+  /battery/actuator    [std_msgs/msg/Int32]
+  /cmd_vel             [geometry_msgs/msg/Twist]     조이스틱 인디케이터 표시용
+발행:
+  /actuator/pump_cmd   [std_msgs/msg/Bool]
+  /actuator/led_cmd    [std_msgs/msg/ColorRGBA]
+
+듀얼 카메라 MJPEG 스트림은 이 노드가 직접 발행하지 않는다. web_video_server를 별도
+실행해서 /camera/surface/image_raw, /camera/underwater/image_raw 토픽을 HTTP로 변환해야
+하고, 이 노드의 웹 대시보드(dashboard_html.py)는 그 스트림 주소를 <img> 태그로 그대로
+표시한다.
+
+배터리 경고 기준(BATTERY_WARNING_PCT)은 구체적인 배터리 사양이 아직 정해지지 않아서 20%로
+임시 지정했다. 실제 배터리 사양이 정해지면 이 값을 조정해야 한다.
+"""
+
+import json
+import threading
+
+import rclpy
+from rclpy.node import Node
+
+from flask import Flask, jsonify, request
+
+from geometry_msgs.msg import Twist
+from sensor_msgs.msg import NavSatFix
+from std_msgs.msg import Bool
+from std_msgs.msg import ColorRGBA
+from std_msgs.msg import Int32
+from std_msgs.msg import Int32MultiArray
+from std_msgs.msg import String
+
+from .dashboard_html import INDEX_HTML
+
+# TODO(GCS 담당자): 실제 배터리 사양이 정해지면 경고 기준치를 조정할 것.
+BATTERY_WARNING_PCT = 20
+
+
+class GuiMainNode(Node):
+
+    def __init__(self):
+        super().__init__('gui_main_node')
+
+        self.declare_parameter('http_port', 8000)
+
+        self.state_lock = threading.Lock()
+        self.state = {
+            'water_quality': None,
+            'gps_fix': None,
+            'gps_has_fix': None,
+            'battery_thruster': None,
+            'battery_actuator': None,
+            'cmd_vel': None,
+        }
+
+        self.create_subscription(String, '/water_quality/data', self.on_water_quality, 10)
+        self.create_subscription(NavSatFix, '/gps/fix', self.on_gps_fix, 10)
+        self.create_subscription(Bool, '/gps/has_fix', self.on_gps_has_fix, 10)
+        self.create_subscription(Int32MultiArray, '/battery/thruster', self.on_battery_thruster, 10)
+        self.create_subscription(Int32, '/battery/actuator', self.on_battery_actuator, 10)
+        self.create_subscription(Twist, '/cmd_vel', self.on_cmd_vel, 10)
+
+        self.pump_pub = self.create_publisher(Bool, '/actuator/pump_cmd', 10)
+        self.led_pub = self.create_publisher(ColorRGBA, '/actuator/led_cmd', 10)
+
+        self.get_logger().info('GUI main node started')
+
+    def on_water_quality(self, msg: String):
+        try:
+            data = json.loads(msg.data)
+        except (TypeError, ValueError):
+            return
+        with self.state_lock:
+            self.state['water_quality'] = data
+
+    def on_gps_fix(self, msg: NavSatFix):
+        with self.state_lock:
+            self.state['gps_fix'] = {'latitude': msg.latitude, 'longitude': msg.longitude}
+
+    def on_gps_has_fix(self, msg: Bool):
+        with self.state_lock:
+            self.state['gps_has_fix'] = msg.data
+
+    def on_battery_thruster(self, msg: Int32MultiArray):
+        with self.state_lock:
+            self.state['battery_thruster'] = list(msg.data)
+
+    def on_battery_actuator(self, msg: Int32):
+        with self.state_lock:
+            self.state['battery_actuator'] = msg.data
+
+    def on_cmd_vel(self, msg: Twist):
+        with self.state_lock:
+            self.state['cmd_vel'] = {'linear_x': msg.linear.x, 'angular_z': msg.angular.z}
+
+    def snapshot(self):
+        with self.state_lock:
+            return dict(self.state)
+
+    def publish_pump(self, on: bool):
+        msg = Bool()
+        msg.data = on
+        self.pump_pub.publish(msg)
+
+    def publish_led(self, r: float, g: float, b: float):
+        msg = ColorRGBA()
+        msg.r, msg.g, msg.b, msg.a = r, g, b, 1.0
+        self.led_pub.publish(msg)
+
+
+def create_app(node: GuiMainNode) -> Flask:
+    app = Flask(__name__)
+
+    @app.get('/')
+    def index():
+        return INDEX_HTML
+
+    @app.get('/api/state')
+    def api_state():
+        state = node.snapshot()
+        state['battery_warning_pct'] = BATTERY_WARNING_PCT
+        return jsonify(state)
+
+    @app.post('/api/pump')
+    def api_pump():
+        payload = request.get_json(force=True, silent=True) or {}
+        node.publish_pump(bool(payload.get('on', False)))
+        return jsonify({'ok': True})
+
+    @app.post('/api/led')
+    def api_led():
+        payload = request.get_json(force=True, silent=True) or {}
+        node.publish_led(
+            float(payload.get('r', 0.0)),
+            float(payload.get('g', 0.0)),
+            float(payload.get('b', 0.0)),
+        )
+        return jsonify({'ok': True})
+
+    return app
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = GuiMainNode()
+
+    http_port = node.get_parameter('http_port').value
+    app = create_app(node)
+    flask_thread = threading.Thread(
+        target=lambda: app.run(host='0.0.0.0', port=http_port, debug=False, use_reloader=False),
+        daemon=True,
+    )
+    flask_thread.start()
+
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()

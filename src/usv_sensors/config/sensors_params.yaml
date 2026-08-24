@@ -1,0 +1,11 @@
+# B1 담당자용 파라미터 파일. 여기 값만 고치면 되고, launch 파일이나 camera_node.py는
+# 건드릴 필요 없다. 값을 바꾼 뒤 다시 실행하면(ros2 launch usv_sensors sensors.launch.py)
+# 바로 반영된다.
+
+camera_node:
+  ros__parameters:
+    # TODO(B1 담당자): v4l2-ctl --list-devices 또는 ls /dev/video*로 확인한
+    # 실제 장치 번호로 바꿀 것.
+    surface_device: 0
+    underwater_device: 2
+    fps: 15.0

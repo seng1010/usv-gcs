@@ -1,0 +1,8 @@
+# app.yaml: Arduino App Lab 앱 메타데이터 (B1 보드).
+# gps_and_water_quality_and_ros/app.yaml과 같은 포맷.
+
+name: usv_sensors
+description: "USV B1 board: water-quality + GPS sensors and dual USB cameras (ROS 2 Jazzy)."
+icon: "USV"
+ports: []
+bricks: []

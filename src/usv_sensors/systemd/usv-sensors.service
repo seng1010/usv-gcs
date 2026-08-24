@@ -1,0 +1,21 @@
+[Unit]
+Description=USV B1 board (water-quality + GPS + camera) ROS 2 stack
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=@RUN_USER@
+Group=@RUN_GROUP@
+SupplementaryGroups=docker
+Environment=HOME=@HOME_DIR@
+Environment=USV_SENSORS_PROJECT_DIR=@PROJECT_DIR@
+ExecStart=@PROJECT_DIR@/start_sensors.sh
+ExecStop=-/usr/bin/docker stop usv_sensors_container
+TimeoutStartSec=180
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
