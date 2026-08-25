@@ -3,9 +3,10 @@
 구독:
   /water_quality/data [std_msgs/msg/String]         JSON 파싱해서 표시
   /gps/fix             [sensor_msgs/msg/NavSatFix]
-  /gps/has_fix         [std_msgs/msg/Bool]           false면 '⚠ GPS 신호 없음' 배너
-  /battery/thruster    [std_msgs/msg/Int32MultiArray]
-  /battery/actuator    [std_msgs/msg/Int32]
+  /gps/has_fix         [std_msgs/msg/Bool]           false면 'GPS 신호 없음' 배너
+  /battery/status      [std_msgs/msg/String]         JSON 파싱: thruster1, thruster2,
+                                                       pump_ctrl, sensor_board 각각
+                                                       {current_a, percentage}
   /cmd_vel             [geometry_msgs/msg/Twist]     조이스틱 인디케이터 표시용
 발행:
   /actuator/pump_cmd   [std_msgs/msg/Bool]
@@ -15,6 +16,10 @@
 실행해서 /camera/surface/image_raw, /camera/underwater/image_raw 토픽을 HTTP로 변환해야
 하고, 이 노드의 웹 대시보드(dashboard_html.py)는 그 스트림 주소를 <img> 태그로 그대로
 표시한다.
+
+전류 센서 4개(추진기1/2, 펌프 제어부, 센서 보드)는 전부 B1 보드에 물려있어서
+usv_sensors의 current_sensor_node가 /battery/status 하나로 통합 발행한다. 예전에
+usv_actuators가 따로 발행하던 /battery/thruster, /battery/actuator는 삭제되었다.
 
 배터리 경고 기준(BATTERY_WARNING_PCT)은 구체적인 배터리 사양이 아직 정해지지 않아서 20%로
 임시 지정했다. 실제 배터리 사양이 정해지면 이 값을 조정해야 한다.
@@ -32,8 +37,6 @@ from geometry_msgs.msg import Twist
 from sensor_msgs.msg import NavSatFix
 from std_msgs.msg import Bool
 from std_msgs.msg import ColorRGBA
-from std_msgs.msg import Int32
-from std_msgs.msg import Int32MultiArray
 from std_msgs.msg import String
 
 from .dashboard_html import INDEX_HTML
@@ -54,16 +57,14 @@ class GuiMainNode(Node):
             'water_quality': None,
             'gps_fix': None,
             'gps_has_fix': None,
-            'battery_thruster': None,
-            'battery_actuator': None,
+            'battery_status': None,
             'cmd_vel': None,
         }
 
         self.create_subscription(String, '/water_quality/data', self.on_water_quality, 10)
         self.create_subscription(NavSatFix, '/gps/fix', self.on_gps_fix, 10)
         self.create_subscription(Bool, '/gps/has_fix', self.on_gps_has_fix, 10)
-        self.create_subscription(Int32MultiArray, '/battery/thruster', self.on_battery_thruster, 10)
-        self.create_subscription(Int32, '/battery/actuator', self.on_battery_actuator, 10)
+        self.create_subscription(String, '/battery/status', self.on_battery_status, 10)
         self.create_subscription(Twist, '/cmd_vel', self.on_cmd_vel, 10)
 
         self.pump_pub = self.create_publisher(Bool, '/actuator/pump_cmd', 10)
@@ -87,13 +88,13 @@ class GuiMainNode(Node):
         with self.state_lock:
             self.state['gps_has_fix'] = msg.data
 
-    def on_battery_thruster(self, msg: Int32MultiArray):
+    def on_battery_status(self, msg: String):
+        try:
+            data = json.loads(msg.data)
+        except (TypeError, ValueError):
+            return
         with self.state_lock:
-            self.state['battery_thruster'] = list(msg.data)
-
-    def on_battery_actuator(self, msg: Int32):
-        with self.state_lock:
-            self.state['battery_actuator'] = msg.data
+            self.state['battery_status'] = data
 
     def on_cmd_vel(self, msg: Twist):
         with self.state_lock:

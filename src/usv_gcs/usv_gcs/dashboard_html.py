@@ -112,14 +112,21 @@ async function refresh() {
       <div class="row"><span>Fix</span><span class="${s.gps_has_fix ? 'ok' : 'warn'}">${s.gps_has_fix ? '있음' : '없음 (마지막 위치)'}</span></div>
     ` : 'GPS 데이터 없음';
 
+    const bs = s.battery_status;
+    const batteryLabels = {
+      thruster1: '추진기1',
+      thruster2: '추진기2',
+      pump_ctrl: '펌프/제어부',
+      sensor_board: '센서 보드',
+    };
     let batteryHtml = '';
-    if (s.battery_thruster) {
-      s.battery_thruster.forEach((pct, i) => {
-        batteryHtml += `<div class="row"><span>추진기 ${i + 1}</span><span>${pct}%</span></div>${batteryBar(pct)}`;
-      });
-    }
-    if (s.battery_actuator !== null && s.battery_actuator !== undefined) {
-      batteryHtml += `<div class="row" style="margin-top:8px"><span>액추에이터</span><span>${s.battery_actuator}%</span></div>${batteryBar(s.battery_actuator)}`;
+    if (bs) {
+      for (const key of Object.keys(batteryLabels)) {
+        const item = bs[key];
+        if (!item) continue;
+        const pct = item.percentage;
+        batteryHtml += `<div class="row"><span>${batteryLabels[key]}</span><span>${item.current_a ?? '-'} A · ${pct ?? '-'}%</span></div>${batteryBar(pct ?? 100)}`;
+      }
     }
     document.getElementById('battery').innerHTML = batteryHtml || '데이터 없음';
 
