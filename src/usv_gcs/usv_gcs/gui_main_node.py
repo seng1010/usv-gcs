@@ -28,6 +28,8 @@ usv_actuators가 따로 발행하던 /battery/thruster, /battery/actuator는 삭
 import json
 import threading
 
+from ament_index_python.packages import get_package_share_directory
+
 import rclpy
 from rclpy.node import Node
 
@@ -116,7 +118,10 @@ class GuiMainNode(Node):
 
 
 def create_app(node: GuiMainNode) -> Flask:
-    app = Flask(__name__)
+    # 대시보드(INDEX_HTML)가 참조하는 배/물고기/쓰레기 이미지 에셋은 web/에 설치되어 있고,
+    # static_url_path=''라서 "lake.png" 같은 상대 경로 그대로 루트에서 서빙된다.
+    web_dir = get_package_share_directory('usv_gcs') + '/web'
+    app = Flask(__name__, static_folder=web_dir, static_url_path='')
 
     @app.get('/')
     def index():
