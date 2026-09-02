@@ -76,9 +76,8 @@ INDEX_HTML = """<!doctype html>
     </div>
 
     <div id="actuatorPanel">
-        <div class="title">펌프 / LED 제어</div>
-        <button onclick="setPump(true)">펌프 ON</button>
-        <button onclick="setPump(false)">펌프 OFF</button>
+        <div class="title">펌프 상태 / LED 제어</div>
+        <div>펌프(조이스틱 버튼): <span id="pumpStatus">-</span></div>
         <div style="margin-top:6px">LED: <input type="color" id="ledColor" value="#00ff00" onchange="setLed()"></div>
     </div>
 </div>
@@ -91,16 +90,10 @@ document.getElementById('surfaceCam').src =
 document.getElementById('underwaterCam').src =
     `http://${location.hostname}:${WEB_VIDEO_PORT}/stream?topic=/camera/underwater/image_raw`;
 
-// --- [펌프 / LED 제어] 버튼 클릭 -> gui_main_node.py의 /api/pump, /api/led로 POST.
-// 실제 ROS 발행은 그 요청을 받은 gui_main_node.py(같은 프로세스의 ROS 노드)가 대신 해준다. ---
-function setPump(on) {
-    isPumping = on;
-    fetch('/api/pump', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({on})
-    });
-}
+// --- [펌프] 조종은 조이스틱 하나로만 하므로 펌프도 joy_to_cmd_node가 조이스틱 버튼으로
+// 직접 /actuator/pump_cmd를 발행한다. 이 화면은 그 상태를 표시만 한다(버튼 없음). ---
 
+// --- [LED] 아직 조이스틱에 버튼을 안 배정해서 여기 색상 피커로 /api/led에 POST ---
 function setLed() {
     const hex = document.getElementById('ledColor').value;
     const r = parseInt(hex.slice(1, 3), 16) / 255;
@@ -168,6 +161,11 @@ async function refreshState() {
         if (s.cmd_vel) {
             lastCmdVel.linearX = s.cmd_vel.linear_x;
             lastCmdVel.angularZ = s.cmd_vel.angular_z;
+        }
+
+        if (s.pump_on !== null && s.pump_on !== undefined) {
+            isPumping = s.pump_on;
+            document.getElementById('pumpStatus').textContent = isPumping ? 'ON' : 'OFF';
         }
 
         if (s.water_quality) {
@@ -243,7 +241,7 @@ let targetY = mapHeight / 2;
 
 let boatAngle = 0.0;
 let boatSpriteIndex = 0; // 스프라이트 프레임 번호 직접 지정
-let isPumping = false; // 펌프 ON/OFF 버튼으로 갱신됨
+let isPumping = false; // 조이스틱 버튼 -> /actuator/pump_cmd -> refreshState() 폴링으로 갱신됨
 
 let fishes = [];
 let monsters = [];
