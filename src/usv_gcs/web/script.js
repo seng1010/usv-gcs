@@ -6,19 +6,31 @@ const ros = new ROSLIB.Ros({
 ros.on('connection', () => console.log('🚀 로봇과 연결되었습니다!'));
 ros.on('error', (error) => console.log('❌ 연결 실패:', error));
 
-const cmdVel = new ROSLIB.Topic({
+// 실제 조종은 조이스틱(joy_to_cmd_node)이 하고, 이 화면은 그 결과를 보여주기만 한다.
+// /cmd_vel을 구독해서 보트 방향/스프라이트에 반영하고(아래 mainLoop), 위치는 /gps/fix로 갱신한다.
+let lastCmdVel = { linearX: 0, angularZ: 0 };
+
+const cmdVelListener = new ROSLIB.Topic({
     ros: ros,
     name: '/cmd_vel',
     messageType: 'geometry_msgs/Twist'
 });
 
-function sendRobotCommand(linearX, angularZ) {
-    const twist = new ROSLIB.Message({
-        linear: { x: linearX, y: 0, z: 0 },
-        angular: { x: 0, y: 0, z: angularZ }
-    });
-    cmdVel.publish(twist);
-}
+cmdVelListener.subscribe((message) => {
+    lastCmdVel.linearX = message.linear.x;
+    lastCmdVel.angularZ = message.angular.z;
+});
+
+// 펌프/워터캐논도 조이스틱 버튼(joy_to_cmd_node)에서 발행하는 실제 상태를 그대로 반영한다.
+const pumpListener = new ROSLIB.Topic({
+    ros: ros,
+    name: '/actuator/pump_cmd',
+    messageType: 'std_msgs/msg/Bool'
+});
+
+pumpListener.subscribe((message) => {
+    isPumping = message.data;
+});
 
 
 
@@ -115,15 +127,14 @@ let ghostGoldTimer = 0;
 const mapWidth = 1140;
 const mapHeight = 1200;
 
-// 디폴트 위치 설정 (GPS 수신 전이나 실내 테스트 시 중앙에 위치)
+// 디폴트 위치 설정 (GPS 수신 전에는 중앙에 위치)
 let targetX = mapWidth / 2;
 let targetY = mapHeight / 2;
 
 let boatAngle = 0.0;
 let boatSpriteIndex = 0; // 스프라이트 프레임 번호 직접 지정
-let isPumping = false;
+let isPumping = false; // /actuator/pump_cmd 구독으로 갱신됨
 
-let keyStates = { w: false, a: false, s: false, d: false, shift: false };
 let fishes = [];
 let monsters = [];
 let monsterSpawnTimer = 0;
@@ -138,31 +149,6 @@ const specialFishTemplates = {
     santa: { name: "SANTA GOLDFISH", kor_name: "산타 금붕어", price: 170, score_val: 35, desc: "적정 수질 시 점수 1.4배 🎅" },
     pumpkin: { name: "PUMPKIN FISH", kor_name: "호박 왕관피쉬", price: 220, score_val: 50, desc: "초당 기본 점수 든든하게 +50점 👑" }
 };
-
-// 키보드 이벤트 리스너 등록
-window.addEventListener("keydown", (e) => {
-    let k = e.key.toLowerCase();
-    if (k === "w" || k === "z") keyStates.w = true;
-    if (k === "a" || k === "q") keyStates.a = true;
-    if (k === "s") keyStates.s = true;
-    if (k === "d") keyStates.d = true;
-    if (e.shiftKey) {
-        keyStates.shift = true;
-        isPumping = true;
-    }
-});
-
-window.addEventListener("keyup", (e) => {
-    let k = e.key.toLowerCase();
-    if (k === "w" || k === "z") keyStates.w = false;
-    if (k === "a" || k === "q") keyStates.a = false;
-    if (k === "s") keyStates.s = false;
-    if (k === "d") keyStates.d = false;
-    if (!e.shiftKey) {
-        keyStates.shift = false;
-        isPumping = false;
-    }
-});
 
 // 마우스 클릭 이벤트 처리
 canvas.addEventListener("click", (e) => {
@@ -411,49 +397,37 @@ function mainLoop() {
     } else if (gameState === "game") {
         animTimer += 0.2;
 
-        let dx = 0, dy = 0;
-        if (keyStates.w) dy -= 1;
-        if (keyStates.s) dy += 1;
-        if (keyStates.a) dx -= 1;
-        if (keyStates.d) dx += 1;
+        // /cmd_vel(조이스틱 → joy_to_cmd_node의 실제 명령)의 부호를 화면 방향(dx,dy)으로
+        // 역변환해서 보트가 바라보는 방향/스프라이트에만 반영한다. 위치 자체는 /gps/fix가 갱신.
+        const CMD_VEL_EPS = 0.05;
+        const isMoving = Math.abs(lastCmdVel.linearX) > CMD_VEL_EPS || Math.abs(lastCmdVel.angularZ) > CMD_VEL_EPS;
 
-        // 키 입력에 따른 방향 및 스프라이트 프레임 매핑 (총 16프레임 기준 직접 지정)
-        if (dx !== 0 || dy !== 0) {
+        if (isMoving) {
             if (activeCardShown) hideFishCardPopup();
+
+            let dy = lastCmdVel.linearX > CMD_VEL_EPS ? -1 : (lastCmdVel.linearX < -CMD_VEL_EPS ? 1 : 0);
+            let dx = lastCmdVel.angularZ > CMD_VEL_EPS ? -1 : (lastCmdVel.angularZ < -CMD_VEL_EPS ? 1 : 0);
+
             boatAngle = Math.atan2(dy, dx);
-            
-            // 로봇에게 이동 명령 전송 (dy가 전진/후진, dx가 회전)
-            sendRobotCommand(dy !== 0 ? dy * -0.3 : 0, dx !== 0 ? dx * -0.5 : 0);
-            
+
             // 8방향 조합에 따른 스프라이트 프레임 지정 (시트 순서에 맞춤)
-            if (dx === 0 && dy < 0) { 
-                boatSpriteIndex = 0; // 위 
-            } else if (dx > 0 && dy < 0) { 
+            if (dx === 0 && dy < 0) {
+                boatSpriteIndex = 0; // 위
+            } else if (dx > 0 && dy < 0) {
                 boatSpriteIndex = 2; // 우상
-            } else if (dx > 0 && dy === 0) { 
+            } else if (dx > 0 && dy === 0) {
                 boatSpriteIndex = 4; // 우
-            } else if (dx > 0 && dy > 0) { 
+            } else if (dx > 0 && dy > 0) {
                 boatSpriteIndex = 6; // 우하
-            } else if (dx === 0 && dy > 0) { 
+            } else if (dx === 0 && dy > 0) {
                 boatSpriteIndex = 8; // 아래
-            } else if (dx < 0 && dy > 0) { 
+            } else if (dx < 0 && dy > 0) {
                 boatSpriteIndex = 10; // 좌하
-            } else if (dx < 0 && dy === 0) { 
+            } else if (dx < 0 && dy === 0) {
                 boatSpriteIndex = 12; // 좌
-            } else if (dx < 0 && dy < 0) { 
+            } else if (dx < 0 && dy < 0) {
                 boatSpriteIndex = 14; // 좌상
             }
-
-            // 키보드 입력 시 로컬 이동 처리 (단, GPS 신호가 들어오면 GPS 좌표가 우선 적용됨)
-            if (!isGpsReceived) {
-                let speed = 6.0;
-                let len = Math.hypot(dx, dy);
-                targetX = Math.max(30, Math.min(targetX + (dx / len) * speed, mapWidth - 30));
-                targetY = Math.max(30, Math.min(targetY + (dy / len) * speed, mapHeight - 30));
-            }
-        } else {
-            // 움직이지 않을 때 로봇 정지 명령
-            sendRobotCommand(0, 0);
         }
 
         let cameraX = Math.max(0, Math.min(targetX - 285, mapWidth - 570));
