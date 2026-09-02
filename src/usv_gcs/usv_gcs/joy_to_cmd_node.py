@@ -18,7 +18,9 @@ class JoyToCmdNode(Node):
         self.declare_parameter('linear_scale', 1.0)    # m/s
         self.declare_parameter('angular_scale', 1.0)   # rad/s
         self.declare_parameter('deadzone', 0.05)
-        self.declare_parameter('pump_button', 0)   # 펌프/워터캐논 작동 버튼 번호 (팀 논의 후 확정)
+        # 펌프/워터캐논 작동 버튼 번호. 0번(Xbox 계열 컨트롤러 기준 A 버튼)으로 확정.
+        # 실제 조이스틱에서 다르게 나오면 코드는 그대로 두고 pump_button 인자만 바꾸면 됨.
+        self.declare_parameter('pump_button', 0)
         self.declare_parameter('enable_heartbeat', False)   # /gcs/heartbeat 발행 여부 - 설계 미확정, 팀 논의 후 True로 전환
         self.declare_parameter('heartbeat_period_sec', 0.5)  # watchdog timeout보다 충분히 짧게 설정 필요
 
