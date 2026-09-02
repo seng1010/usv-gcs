@@ -3,11 +3,12 @@
 <package format="3">
   <name>usv_gcs</name>
   <version>0.0.1</version>
-  <description>USV ground control station nodes (joystick teleop) and web dashboard</description>
+  <description>USV ground control station nodes (GUI, joystick teleop)</description>
   <maintainer email="parkse1010@gmail.com">parkseeun</maintainer>
   <license>Apache-2.0</license>
 
   <depend>rclpy</depend>
+  <depend>ament_index_python</depend>
   <depend>sensor_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>std_msgs</depend>
@@ -15,7 +16,6 @@
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>web_video_server</exec_depend>
-  <exec_depend>rosbridge_server</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

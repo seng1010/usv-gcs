@@ -1,52 +1,130 @@
-// --- [ROS2 연동 및 GPS 설정] ---
-const ros = new ROSLIB.Ros({
-    url: 'ws://localhost:9090'   // 또는 'ws://<라즈베리파이_IP>:9090'
-});
+"""gui_main_node의 웹 대시보드 HTML/JS.
 
-ros.on('connection', () => console.log('🚀 로봇과 연결되었습니다!'));
-ros.on('error', (error) => console.log('❌ 연결 실패:', error));
+Dongwon님이 만든 캔버스 게임 스타일 GUI(usv_gui 레포)를 이 프로젝트의 인터페이스 계약에 맞게
+이식한 버전이다. 원본은 roslibjs로 rosbridge_websocket에 직접 붙는 구조였지만, 이 프로젝트의
+gui_main_node.py는 Flask + HTTP 폴링(`/api/state`) 구조라서 데이터를 가져오는 부분만
+전부 폴링 방식으로 바꿨다 (게임 로직 자체는 그대로).
 
-// 실제 조종은 조이스틱(joy_to_cmd_node)이 하고, 이 화면은 그 결과를 보여주기만 한다.
-// /cmd_vel을 구독해서 보트 방향/스프라이트에 반영하고(아래 mainLoop), 위치는 /gps/fix로 갱신한다.
-let lastCmdVel = { linearX: 0, angularZ: 0 };
+이미지 에셋(배/물고기/쓰레기 스프라이트 등)은 gui_main_node.py가 web/ 디렉터리를
+static_folder로 서빙해서 "lake.png" 같은 상대 경로가 그대로 동작한다.
+"""
 
-const cmdVelListener = new ROSLIB.Topic({
-    ros: ros,
-    name: '/cmd_vel',
-    messageType: 'geometry_msgs/Twist'
-});
+INDEX_HTML = """<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>USV GCS Dashboard</title>
+<style>
+  body {
+      margin: 0; padding: 0; background-color: #1a1a1a; color: #fff;
+      display: flex; justify-content: center; align-items: center; height: 100vh;
+      font-family: '맑은 고딕', sans-serif; overflow: hidden;
+  }
+  #gameContainer { position: relative; display: inline-block; }
+  canvas { border: 3px solid #e29578; background-color: #2c1a11; box-shadow: 0 0 20px rgba(0,0,0,0.8); }
 
-cmdVelListener.subscribe((message) => {
-    lastCmdVel.linearX = message.linear.x;
-    lastCmdVel.angularZ = message.angular.z;
-});
+  #gpsBanner {
+      position: absolute; top: 0; left: 0; right: 0; z-index: 20;
+      background: #522; color: #fdd; padding: 6px; text-align: center; font-size: 12px;
+      display: none;
+  }
 
-// 펌프/워터캐논도 조이스틱 버튼(joy_to_cmd_node)에서 발행하는 실제 상태를 그대로 반영한다.
-const pumpListener = new ROSLIB.Topic({
-    ros: ros,
-    name: '/actuator/pump_cmd',
-    messageType: 'std_msgs/msg/Bool'
-});
+  #cameraPanel {
+      position: absolute; top: 440px; left: 585px; width: 200px; height: 120px;
+      background-color: #1c100a; border: 2px solid #38bdf8; box-sizing: border-box;
+      padding: 3px; display: flex; flex-direction: column; justify-content: space-between;
+      z-index: 10;
+  }
+  .cam-box {
+      width: 100%; height: 54px; background-color: #000; border: 1px solid #38bdf8;
+      position: relative; overflow: hidden; display: flex; align-items: center; justify-content: center;
+  }
+  .cam-title {
+      position: absolute; top: 2px; left: 4px; font-size: 8px; color: #38bdf8; font-weight: bold;
+      background: rgba(0, 0, 0, 0.7); padding: 1px 3px; border-radius: 2px; z-index: 2;
+  }
+  .cam-box img { width: 100%; height: 100%; object-fit: cover; }
 
-pumpListener.subscribe((message) => {
-    isPumping = message.data;
-});
+  #actuatorPanel {
+      position: absolute; top: 10px; left: 585px; width: 200px; box-sizing: border-box;
+      background-color: #150d08; border: 2px solid #e29578; padding: 6px; font-size: 11px;
+      z-index: 10;
+  }
+  #actuatorPanel .title { color: #ffd166; font-weight: bold; margin-bottom: 4px; }
+  #actuatorPanel button {
+      background: #246; color: #fff; border: none; border-radius: 4px; padding: 4px 8px;
+      cursor: pointer; margin-right: 4px; font-size: 10px;
+  }
+  #actuatorPanel button:hover { background: #357; }
+  #actuatorPanel input[type=color] { width: 32px; height: 22px; vertical-align: middle; }
+</style>
+</head>
+<body>
+<div id="gameContainer">
+    <div id="gpsBanner">⚠ GPS 신호 없음 (마지막 위치 유지 중)</div>
+    <canvas id="gameCanvas" width="800" height="600"></canvas>
 
+    <div id="cameraPanel">
+        <div class="cam-box">
+            <span class="cam-title">📷 수면 (Surface)</span>
+            <img id="surfaceCam" alt="수면 카메라 연결 중..." onerror="this.style.opacity=0.3">
+        </div>
+        <div class="cam-box">
+            <span class="cam-title">🌊 수중 (Underwater)</span>
+            <img id="underwaterCam" alt="수중 카메라 연결 중..." onerror="this.style.opacity=0.3">
+        </div>
+    </div>
 
+    <div id="actuatorPanel">
+        <div class="title">펌프 / LED 제어</div>
+        <button onclick="setPump(true)">펌프 ON</button>
+        <button onclick="setPump(false)">펌프 OFF</button>
+        <div style="margin-top:6px">LED: <input type="color" id="ledColor" value="#00ff00" onchange="setLed()"></div>
+    </div>
+</div>
 
+<script>
+// --- [카메라 스트림] web_video_server가 변환한 MJPEG를 <img>로 그대로 표시 ---
+const WEB_VIDEO_PORT = 8080;  // web_video_server 기본 포트, 다르게 실행했다면 여기만 바꾸면 됨
+document.getElementById('surfaceCam').src =
+    `http://${location.hostname}:${WEB_VIDEO_PORT}/stream?topic=/camera/surface/image_raw`;
+document.getElementById('underwaterCam').src =
+    `http://${location.hostname}:${WEB_VIDEO_PORT}/stream?topic=/camera/underwater/image_raw`;
+
+// --- [펌프 / LED 제어] 버튼 클릭 -> gui_main_node.py의 /api/pump, /api/led로 POST.
+// 실제 ROS 발행은 그 요청을 받은 gui_main_node.py(같은 프로세스의 ROS 노드)가 대신 해준다. ---
+function setPump(on) {
+    isPumping = on;
+    fetch('/api/pump', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({on})
+    });
+}
+
+function setLed() {
+    const hex = document.getElementById('ledColor').value;
+    const r = parseInt(hex.slice(1, 3), 16) / 255;
+    const g = parseInt(hex.slice(3, 5), 16) / 255;
+    const b = parseInt(hex.slice(5, 7), 16) / 255;
+    fetch('/api/led', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({r, g, b})
+    });
+}
+
+// --- [GPS] 위경도를 캔버스 픽셀 좌표로 변환 ---
 // 📍 송도 테스트 구역 가상 위경도 범위 설정
 const gpsBounds = {
-    minLat: 37.3890, 
+    minLat: 37.3890,
     maxLat: 37.3910,
     minLng: 126.6300,
     maxLng: 126.6320
 };
 
-// 위경도를 캔버스 픽셀 좌표로 변환하는 함수
 function convertGpsToPixel(lat, lng) {
     let x = ((lng - gpsBounds.minLng) / (gpsBounds.maxLng - gpsBounds.minLng)) * mapWidth;
     let y = (1.0 - (lat - gpsBounds.minLat) / (gpsBounds.maxLat - gpsBounds.minLat)) * mapHeight;
-    
+
     return {
         x: Math.max(30, Math.min(mapWidth - 30, x)),
         y: Math.max(30, Math.min(mapHeight - 30, y))
@@ -55,23 +133,55 @@ function convertGpsToPixel(lat, lng) {
 
 let isGpsReceived = false;
 
-// /gps/fix 토픽 구독 (NavSatFix 메시지)
-const gpsListener = new ROSLIB.Topic({
-    ros: ros,
-    name: '/gps/fix',
-    messageType: 'sensor_msgs/NavSatFix'
-});
+// 조종은 조이스틱(joy_to_cmd_node)이 하고, 이 화면은 그 결과를 보여주기만 한다.
+let lastCmdVel = { linearX: 0, angularZ: 0 };
 
-gpsListener.subscribe((message) => {
-    let pos = convertGpsToPixel(message.latitude, message.longitude);
-    targetX = pos.x;
-    targetY = pos.y;
-    
-    if (!isGpsReceived) {
-        isGpsReceived = true;
-        console.log("🛰️ 첫 GPS 좌표 수신 완료!");
+// /water_quality/data의 실제 JSON 스키마 (water_quality_node.py 기준) 그대로 보관
+let sensorWQ = {
+    temp_c: null, ph: null, do_mg_l: null,
+    turbidity_voltage_v: null, clarity_pct: null, clarity_level: null
+};
+
+// /battery/status의 실제 JSON 스키마: thruster1/thruster2/pump_ctrl/sensor_board 각각 {current_a, percentage}
+let batteryStatus = null;
+let batteryWarningPct = 20;
+
+// --- [상태 폴링] gui_main_node.py의 /api/state를 1초 간격으로 읽어온다 ---
+async function refreshState() {
+    try {
+        const res = await fetch('/api/state');
+        const s = await res.json();
+
+        const banner = document.getElementById('gpsBanner');
+        banner.style.display = (s.gps_has_fix === false) ? 'block' : 'none';
+
+        if (s.gps_fix) {
+            let pos = convertGpsToPixel(s.gps_fix.latitude, s.gps_fix.longitude);
+            targetX = pos.x;
+            targetY = pos.y;
+            if (!isGpsReceived) {
+                isGpsReceived = true;
+                console.log("🛰️ 첫 GPS 좌표 수신 완료!");
+            }
+        }
+
+        if (s.cmd_vel) {
+            lastCmdVel.linearX = s.cmd_vel.linear_x;
+            lastCmdVel.angularZ = s.cmd_vel.angular_z;
+        }
+
+        if (s.water_quality) {
+            sensorWQ = s.water_quality;
+        }
+
+        batteryStatus = s.battery_status;
+        if (s.battery_warning_pct !== undefined) batteryWarningPct = s.battery_warning_pct;
+    } catch (e) {
+        console.error(e);
     }
-});
+}
+setInterval(refreshState, 1000);
+refreshState();
 // -----------------------
 
 const canvas = document.getElementById("gameCanvas");
@@ -133,7 +243,7 @@ let targetY = mapHeight / 2;
 
 let boatAngle = 0.0;
 let boatSpriteIndex = 0; // 스프라이트 프레임 번호 직접 지정
-let isPumping = false; // /actuator/pump_cmd 구독으로 갱신됨
+let isPumping = false; // 펌프 ON/OFF 버튼으로 갱신됨
 
 let fishes = [];
 let monsters = [];
@@ -316,7 +426,7 @@ setInterval(() => {
 
     if (timeLeft <= 0) {
         isGameOver = true;
-        alert(`TIME OVER ⏳\n최종 점수: ${score}점`);
+        alert(`TIME OVER ⏳\\n최종 점수: ${score}점`);
         gameState = "main";
         return;
     }
@@ -358,6 +468,20 @@ setInterval(() => {
     }
 }, 1000);
 
+function batterySummaryText() {
+    if (!batteryStatus) return "🔋 배터리: 데이터 없음";
+    const labels = { thruster1: "추진1", thruster2: "추진2", pump_ctrl: "펌프/제어", sensor_board: "센서" };
+    let parts = [];
+    for (const key of Object.keys(labels)) {
+        const item = batteryStatus[key];
+        if (!item) continue;
+        const pct = item.percentage;
+        const warn = (pct !== undefined && pct < batteryWarningPct) ? "⚠" : "";
+        parts.push(`${labels[key]} ${pct ?? '-'}%${warn}`);
+    }
+    return parts.length ? `🔋 ${parts.join(' ')}` : "🔋 배터리: 데이터 없음";
+}
+
 let animTimer = 0;
 function mainLoop() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -397,8 +521,9 @@ function mainLoop() {
     } else if (gameState === "game") {
         animTimer += 0.2;
 
-        // /cmd_vel(조이스틱 → joy_to_cmd_node의 실제 명령)의 부호를 화면 방향(dx,dy)으로
-        // 역변환해서 보트가 바라보는 방향/스프라이트에만 반영한다. 위치 자체는 /gps/fix가 갱신.
+        // /cmd_vel(조이스틱 → joy_to_cmd_node의 실제 명령, /api/state로 폴링)의 부호를
+        // 화면 방향(dx,dy)으로 역변환해서 보트가 바라보는 방향/스프라이트에만 반영한다.
+        // 위치 자체는 /gps/fix가 갱신(refreshState).
         const CMD_VEL_EPS = 0.05;
         const isMoving = Math.abs(lastCmdVel.linearX) > CMD_VEL_EPS || Math.abs(lastCmdVel.angularZ) > CMD_VEL_EPS;
 
@@ -526,9 +651,9 @@ function mainLoop() {
             tempCanvas.width = frameW;
             tempCanvas.height = sh;
             let tCtx = tempCanvas.getContext('2d');
-            
+
             tCtx.drawImage(assets.ship, boatSpriteIndex * frameW, 0, frameW, sh, 0, 0, frameW, sh);
-            
+
             try {
                 let imgData = tCtx.getImageData(0, 0, frameW, sh);
                 let data = imgData.data;
@@ -538,7 +663,7 @@ function mainLoop() {
                     }
                 }
                 tCtx.putImageData(imgData, 0, 0);
-                
+
                 ctx.drawImage(tempCanvas, 0, 0, frameW, sh, screenBoatX - 27, screenBoatY - 27, 54, 54);
             } catch (err) {
                 ctx.drawImage(tempCanvas, 0, 0, frameW, sh, screenBoatX - 27, screenBoatY - 27, 54, 54);
@@ -573,64 +698,33 @@ function mainLoop() {
         ctx.font = "bold 13px '맑은 고딕'";
         ctx.fillText(`💰 ${gold} G`, 685, 80);
 
-// --- [수질 센서 데이터 변수 추가] ---
-let waterStatusSummary = "데이터 수신 대기 중"; // 수질 상태 요약
-let turbidity = 0.0;     // 맑기 지수 (탁도 등)
-let waterTemp = 0.0;     // 수온 (°C)
-let dissolvedOxygen = 0.0; // 용존산소량 (mg/L)
-let waterQualityScore = 70.0; // 기존 게임 로직 호환용 수치
-// ---------------------------------
-
-// /water_quality 토픽 구독 (std_msgs/msg/String - JSON 형식)
-const waterQualityListener = new ROSLIB.Topic({
-    ros: ros,
-    name: '/water_quality',
-    messageType: 'std_msgs/msg/String'
-});
-
-waterQualityListener.subscribe((message) => {
-    try {
-        // ROS2 센서가 보낸 JSON 문자열을 객체로 파싱
-        let data = JSON.parse(message.data);
-        
-        if (data.status) waterStatusSummary = data.status;         // 수질 상태 요약
-        if (data.turbidity !== undefined) turbidity = data.turbidity; // 맑기 지수
-        if (data.temperature !== undefined) waterTemp = data.temperature; // 수온
-        if (data.do !== undefined) dissolvedOxygen = data.do;     // 용존산소량 (Dissolved Oxygen)
-        if (data.score !== undefined) waterQualityScore = data.score; // 종합 수질 점수 (필요시)
-        
-    } catch (e) {
-        console.log("❌ 수질 데이터 파싱 에러:", e);
-    }
-});
-
-       // 💧 수질 센서 정보 패널 (수정된 부분)
+        // 💧 수질 센서 정보 패널 (실제 /water_quality/data 스키마: temp_c/ph/do_mg_l/
+        // turbidity_voltage_v/clarity_pct/clarity_level 그대로 표시)
         ctx.fillStyle = "#1c100a";
         ctx.strokeStyle = "#ffd166";
         ctx.lineWidth = 2;
-        ctx.fillRect(585, 95, 200, 145); // 패널 높이를 살짝 늘렸습니다
+        ctx.fillRect(585, 95, 200, 145);
         ctx.strokeRect(585, 95, 200, 145);
 
         ctx.fillStyle = "#ffd166";
         ctx.font = "bold 11px '맑은 고딕'";
         ctx.fillText("[ USV 수질 센서 모니터링 ]", 685, 115);
 
-        // 1. 수질 상태 요약
         ctx.fillStyle = "#ffffff";
         ctx.font = "bold 11px '맑은 고딕'";
-        ctx.fillText(`상태: ${waterStatusSummary}`, 685, 138);
+        ctx.fillText(`등급: ${sensorWQ.clarity_level ?? '-'}`, 685, 138);
 
-        // 2. 맑기 지수, 수온, 용존산소량 표시
         ctx.font = "10px '맑은 고딕'";
         ctx.fillStyle = "#4cc9f0";
-        ctx.fillText(`✨ 맑기 지수: ${turbidity.toFixed(1)}`, 685, 160);
+        ctx.fillText(`✨ 맑기: ${sensorWQ.clarity_pct ?? '-'}%  (탁도 ${sensorWQ.turbidity_voltage_v ?? '-'}V)`, 685, 160);
         ctx.fillStyle = "#38bdf8";
-        ctx.fillText(`🌡️ 수온: ${waterTemp.toFixed(1)} °C`, 685, 180);
+        ctx.fillText(`🌡️ 수온: ${sensorWQ.temp_c ?? '-'} °C   pH ${sensorWQ.ph ?? '-'}`, 685, 180);
         ctx.fillStyle = "#2ed573";
-        ctx.fillText(`🫧 용존산소: ${dissolvedOxygen.toFixed(1)} mg/L`, 685, 200);
+        ctx.fillText(`🫧 용존산소: ${sensorWQ.do_mg_l ?? '-'} mg/L`, 685, 200);
 
-        // 기존 게임 로직(산타 물고기 효과 등)을 위한 게이지 바 반영
-        let ratio = Math.max(0, Math.min(1, waterQualityScore / 100.0));
+        // 산타 물고기 효과(적정 수질 시 점수 배율)는 게임 자체 waterQuality 변수를 그대로 씀.
+        // 이 게이지 바는 맑기(%)를 시각화만 하는 용도.
+        let ratio = Math.max(0, Math.min(1, (sensorWQ.clarity_pct ?? 0) / 100.0));
         ctx.fillStyle = "#0f0906";
         ctx.strokeStyle = "#8b5a2b";
         ctx.lineWidth = 1;
@@ -639,6 +733,10 @@ waterQualityListener.subscribe((message) => {
 
         ctx.fillStyle = "#06d6a0";
         ctx.fillRect(606, 213, intRange(158 * ratio), 10);
+
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "9px '맑은 고딕'";
+        ctx.fillText(batterySummaryText(), 685, 236);
 
         // 상점 패널
         ctx.fillStyle = "#150d08";
@@ -668,8 +766,7 @@ waterQualityListener.subscribe((message) => {
             ctx.font = "10px '맑은 고딕'";
             ctx.fillText(item.text, 685, item.y + 17);
         });
-   
-       
+
         // 7. 좌측 상단 미니맵
         ctx.fillStyle = "#1c100a";
         ctx.strokeStyle = "#ffd166";
@@ -705,7 +802,6 @@ waterQualityListener.subscribe((message) => {
 
         ctx.fillStyle = "#55ff55";
         ctx.font = "bold 9px 'Courier New'";
-        // 2번 요청 반영: 미니맵 하단에 실제 좌표 표시 
         ctx.fillText(`X: ${Math.floor(targetX)}, Y: ${Math.floor(targetY)}`, 80, 162);
 
         // 8. 알림 메시지
@@ -819,3 +915,7 @@ function intRange(val) {
 }
 
 requestAnimationFrame(mainLoop);
+</script>
+</body>
+</html>
+"""

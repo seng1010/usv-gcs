@@ -19,12 +19,13 @@ setup(
     zip_safe=True,
     maintainer='parkseeun',
     maintainer_email='parkse1010@gmail.com',
-    description='USV ground control station nodes (joystick teleop) and web dashboard',
+    description='USV ground control station nodes (GUI, joystick teleop)',
     license='Apache-2.0',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
             'joy_to_cmd_node = usv_gcs.joy_to_cmd_node:main',
+            'gui_main_node = usv_gcs.gui_main_node:main',
         ],
     },
 )
