@@ -58,6 +58,7 @@ class JoyToCmdNode(Node):
             )
 
         self.get_logger().info('joy_to_cmd_node started')
+        self.prev_pump_state = False # 이전 펌프 상태를 저장하여 버튼 상태 변화 감지용
 
     def joy_callback(self, msg: Joy):
         self._last_joy_time = self.get_clock().now()
@@ -77,9 +78,12 @@ class JoyToCmdNode(Node):
         self.cmd_pub.publish(twist)
 
         if len(msg.buttons) > self.pump_button:
-            pump_msg = Bool()
-            pump_msg.data = bool(msg.buttons[self.pump_button])
-            self.pump_pub.publish(pump_msg)
+            new_state = bool(msg.buttons[self.pump_button])
+            if new_state != self.prev_pump_state:
+                pump_msg = Bool()
+                pump_msg.data = new_state
+                self.pump_pub.publish(pump_msg)
+                self.prev_pump_state = new_state
 
     def heartbeat_callback(self):
         header = Header()
