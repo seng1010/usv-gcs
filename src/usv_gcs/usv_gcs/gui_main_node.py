@@ -8,9 +8,14 @@
                                                        pump_ctrl, sensor_board 각각
                                                        {current_a, percentage}
   /cmd_vel             [geometry_msgs/msg/Twist]     조이스틱 인디케이터 표시용
+  /actuator/pump_cmd   [std_msgs/msg/Bool]           joy_to_cmd_node가 조이스틱 버튼으로
+                                                       발행 - 여기선 상태 표시용으로만 구독
 발행:
-  /actuator/pump_cmd   [std_msgs/msg/Bool]
   /actuator/led_cmd    [std_msgs/msg/ColorRGBA]
+
+조종은 조이스틱 하나로만 하므로(마우스로 GUI 버튼을 누를 사람이 없음) 펌프는
+joy_to_cmd_node가 발행하고, 이 노드는 그 상태를 /api/state로 보여주기만 한다.
+LED는 아직 조이스틱에 버튼을 안 배정해서 계속 GUI 쪽 컨트롤(/api/led)로 남겨뒀다.
 
 듀얼 카메라 MJPEG 스트림은 이 노드가 직접 발행하지 않는다. web_video_server를 별도
 실행해서 /camera/surface/image_raw, /camera/underwater/image_raw 토픽을 HTTP로 변환해야
@@ -27,6 +32,8 @@ usv_actuators가 따로 발행하던 /battery/thruster, /battery/actuator는 삭
 
 import json
 import threading
+
+from ament_index_python.packages import get_package_share_directory
 
 import rclpy
 from rclpy.node import Node
@@ -59,6 +66,7 @@ class GuiMainNode(Node):
             'gps_has_fix': None,
             'battery_status': None,
             'cmd_vel': None,
+            'pump_on': None,
         }
 
         self.create_subscription(String, '/water_quality/data', self.on_water_quality, 10)
@@ -66,8 +74,8 @@ class GuiMainNode(Node):
         self.create_subscription(Bool, '/gps/has_fix', self.on_gps_has_fix, 10)
         self.create_subscription(String, '/battery/status', self.on_battery_status, 10)
         self.create_subscription(Twist, '/cmd_vel', self.on_cmd_vel, 10)
+        self.create_subscription(Bool, '/actuator/pump_cmd', self.on_pump_cmd, 10)
 
-        self.pump_pub = self.create_publisher(Bool, '/actuator/pump_cmd', 10)
         self.led_pub = self.create_publisher(ColorRGBA, '/actuator/led_cmd', 10)
 
         self.get_logger().info('GUI main node started')
@@ -100,14 +108,13 @@ class GuiMainNode(Node):
         with self.state_lock:
             self.state['cmd_vel'] = {'linear_x': msg.linear.x, 'angular_z': msg.angular.z}
 
+    def on_pump_cmd(self, msg: Bool):
+        with self.state_lock:
+            self.state['pump_on'] = msg.data
+
     def snapshot(self):
         with self.state_lock:
             return dict(self.state)
-
-    def publish_pump(self, on: bool):
-        msg = Bool()
-        msg.data = on
-        self.pump_pub.publish(msg)
 
     def publish_led(self, r: float, g: float, b: float):
         msg = ColorRGBA()
@@ -116,7 +123,10 @@ class GuiMainNode(Node):
 
 
 def create_app(node: GuiMainNode) -> Flask:
-    app = Flask(__name__)
+    # 대시보드(INDEX_HTML)가 참조하는 배/물고기/쓰레기 이미지 에셋은 web/에 설치되어 있고,
+    # static_url_path=''라서 "lake.png" 같은 상대 경로 그대로 루트에서 서빙된다.
+    web_dir = get_package_share_directory('usv_gcs') + '/web'
+    app = Flask(__name__, static_folder=web_dir, static_url_path='')
 
     @app.get('/')
     def index():
@@ -127,12 +137,6 @@ def create_app(node: GuiMainNode) -> Flask:
         state = node.snapshot()
         state['battery_warning_pct'] = BATTERY_WARNING_PCT
         return jsonify(state)
-
-    @app.post('/api/pump')
-    def api_pump():
-        payload = request.get_json(force=True, silent=True) or {}
-        node.publish_pump(bool(payload.get('on', False)))
-        return jsonify({'ok': True})
 
     @app.post('/api/led')
     def api_led():

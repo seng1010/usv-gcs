@@ -35,6 +35,10 @@ def generate_launch_description():
     )
     linear_scale_arg = DeclareLaunchArgument('linear_scale', default_value='1.0')
     angular_scale_arg = DeclareLaunchArgument('angular_scale', default_value='1.0')
+    pump_button_arg = DeclareLaunchArgument(
+        'pump_button', default_value='0',
+        description='펌프/워터캐논 작동 버튼 번호 (GCS 담당자가 실제 조이스틱 기준으로 확정)',
+    )
 
     return LaunchDescription([
         http_port_arg,
@@ -43,6 +47,7 @@ def generate_launch_description():
         angular_axis_arg,
         linear_scale_arg,
         angular_scale_arg,
+        pump_button_arg,
         Node(package='joy', executable='joy_node', name='joy_node'),
         Node(
             package='usv_gcs', executable='joy_to_cmd_node', name='joy_to_cmd_node',
@@ -51,6 +56,7 @@ def generate_launch_description():
                 'angular_axis': ParameterValue(LaunchConfiguration('angular_axis'), value_type=int),
                 'linear_scale': ParameterValue(LaunchConfiguration('linear_scale'), value_type=float),
                 'angular_scale': ParameterValue(LaunchConfiguration('angular_scale'), value_type=float),
+                'pump_button': ParameterValue(LaunchConfiguration('pump_button'), value_type=int),
             }],
         ),
         Node(
